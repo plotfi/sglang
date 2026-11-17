@@ -49,6 +49,8 @@ from sglang.kernels.ops.gemm.fp8w_small_m_gemm import (
     quantize_weight as quantize_fp8w_weight,
 )
 from sglang.kernels.ops.gemm.router_gemm_fp32 import (
+    router_gemm_tlx,
+    router_gemm_tlx_supported,
     router_gemm_tuned,
     router_gemv_fp32,
     router_gemv_fp32_supported,
@@ -433,6 +435,8 @@ _DRAFT_TRITON_A16W16_GEMMS = ((24, 7168, 8192), (24, 8192, 3584))
 _FUSED_UNPOOL_BOUNDARY = envs.SGLANG_ROCM_MUSE_FUSED_UNPOOL_BOUNDARY.get()
 # The fused unpooler + FFN boundary on the TLX mm and norm_residual_norm (gfx950).
 _TLX_BOUNDARY_NORM = envs.SGLANG_USE_TLX_BOUNDARY_NORM.get()
+# FP32 router logits on tlx.ops.router_gemm, ahead of the GEMV / tuned / torch paths it beats at every M.
+_TLX_ROUTER_GEMM = envs.SGLANG_USE_TLX_ROUTER_GEMM.get()
 # Device memory left for the KV pool, CUDA graphs and activations beside both MXFP4 expert layouts; below it
 # the experts keep only the a4w4 preshuffled copy. Arbitrary, not tuned.
 _A4W4_RESERVE_BYTES = 64 << 30
@@ -1048,6 +1052,8 @@ class MuseSpark1xMoE(nn.Module):
         self.register_buffer(
             "expert_bias", torch.zeros(self.num_experts, dtype=torch.float32)
         )
+        # [num_experts, hidden] contiguous copy of the FP32 router weight for router_gemm_tlx, made after loading.
+        self.register_buffer("router_weight_ek", None, persistent=False)
         self.pre_expert_proj = (
             nn.Linear(self.hidden_size, self.expert_hidden_size, bias=False)
             if self.expert_hidden_size != self.hidden_size
@@ -1209,6 +1215,26 @@ class MuseSpark1xMoE(nn.Module):
             return output
         return self.unpool(output, prefill_fp8=prefill_fp8)
 
+    def _router_logits(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        if self.router_weight_ek is not None and router_gemm_tlx_supported(
+            hidden_states, self.router_weight_ek
+        ):
+            return router_gemm_tlx(hidden_states, self.router_weight_ek)
+        if (
+            _USE_ROUTER_GEMV
+            and self.router_in_fp32
+            and router_gemv_fp32_supported(hidden_states, self.router.weight)
+        ):
+            # bf16 -> fp32 conversion happens inside the kernel (exact), IEEE fp32 accumulate
+            return router_gemv_fp32(hidden_states, self.router.weight)
+        if _DENSE_TUNED and self.router_in_fp32:
+            router_logits = router_gemm_tuned(hidden_states, self.router.weight)
+            if router_logits is not None:
+                _log_dense_tuned("router", hidden_states.shape[0])
+                return router_logits
+        router_input = hidden_states.float() if self.router_in_fp32 else hidden_states
+        return self.router(router_input)
+
     def route(
         self,
         hidden_states: torch.Tensor,
@@ -1239,24 +1265,7 @@ class MuseSpark1xMoE(nn.Module):
             return router_pooler.route_with_shared_pooler(
                 self, hidden_states, quant_out=quant_out, x_fp8=x_fp8
             )
-        if (
-            _USE_ROUTER_GEMV
-            and self.router_in_fp32
-            and router_gemv_fp32_supported(hidden_states, self.router.weight)
-        ):
-            # bf16 -> fp32 conversion happens inside the kernel (exact), IEEE fp32 accumulate
-            router_logits = router_gemv_fp32(hidden_states, self.router.weight)
-        else:
-            router_logits = None
-            if _DENSE_TUNED and self.router_in_fp32:
-                router_logits = router_gemm_tuned(hidden_states, self.router.weight)
-                if router_logits is not None:
-                    _log_dense_tuned("router", hidden_states.shape[0])
-            if router_logits is None:
-                router_input = (
-                    hidden_states.float() if self.router_in_fp32 else hidden_states
-                )
-                router_logits = self.router(router_input)
+        router_logits = self._router_logits(hidden_states)
         topk_scores, topk_ids = self._routing_op().forward(
             None, router_logits, self.top_k, True
         )
@@ -2285,6 +2294,10 @@ class MuseSparkTextForCausalLM(nn.Module):
         if router_pooler.JOINT_ROUTER_POOLER:
             for moe in moe_layers:
                 router_pooler.prepare_joint_router_pooler(moe)
+        if _TLX_ROUTER_GEMM:
+            for moe in moe_layers:
+                if moe.router_in_fp32:
+                    moe.router_weight_ek = moe.router.weight.data.t().contiguous()
         if mxfp4_moe.A4W4_ENABLED:
             experts = [
                 module
