@@ -1079,6 +1079,12 @@ class Envs:
     # tlx.ops.qk_norm_rope_kv_cache (sglang.kernels.ops.attention.tlx) instead of the Triton qk_norm_rope_cache, at any
     # row count (SGLANG_ROCM_MUSE_QK_ROPE_CACHE_MAX_ROWS does not apply). Needs TLX (uTLX or fbtriton).
     SGLANG_USE_TLX_QK_NORM_ROPE = EnvBool(False)
+    # gfx950 ROCm Muse Spark: from 512 rows (prefill), the attention output's weightless per-head RMSNorm times sigmoid
+    # gate (head dim 64) runs the vendored tlx.ops.rmsnorm_gate (plain Triton) instead of the fused Triton kernel.
+    SGLANG_USE_TLX_RMSNORM_GATE = EnvBool(False)
+    # gfx950 ROCm Muse Spark: RMSNorm modules over 4096-feature BF16/FP16 rows (the pre-expert norm) run the vendored
+    # tlx.ops.rmsnorm instead of torch's rms_norm. Needs TLX (uTLX or fbtriton).
+    SGLANG_USE_TLX_RMSNORM = EnvBool(False)
     # Set by someone bisecting a numerical or performance regression to an
     # online-FP8 linear on gfx1250, to take the Triton tile out of the picture
     # without rebuilding. The tile is on by default because hipBLASLt ships no

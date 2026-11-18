@@ -141,6 +141,17 @@ register_kernel(
         capabilities=frozenset({CapabilityRequirement.HIP}),
     )
 )
+# Vendored tlx.ops.rmsnorm (gfx950, 4096 features) and tlx.ops.rmsnorm_gate (head dim 64).
+for _fn in ("rmsnorm", "rmsnorm_gate"):
+    register_kernel(
+        KernelSpec(
+            op=f"layernorm.tlx_{_fn}",
+            backend=KernelBackend.TRITON,
+            target=f"sglang.kernels.ops.layernorm.tlx:{_fn}",
+            capabilities=frozenset({CapabilityRequirement.HIP}),
+        )
+    )
+del _fn
 
 register_kernel(
     KernelSpec(

@@ -59,3 +59,60 @@ def norm_residual_norm(
         None,
         None,
     )
+
+
+def rmsnorm_supported(x: torch.Tensor, weight: torch.Tensor | None) -> bool:
+    """Whether ``rmsnorm`` runs these operands on the TLX kernel; host-only, never reads device data.
+
+    Only 4096-feature BF16/FP16 rows take the TLX kernel; ``tlx.ops.rmsnorm`` sends every other width to a plain
+    Triton kernel, which this wrapper does not offer.
+    """
+    from sglang.kernels.tlx_ops.kernels.norm.gfx950 import use_tlx_kernel
+
+    return (
+        x.dim() == 2
+        and x.shape[0] > 0
+        and x.stride(1) == 1
+        and use_tlx_kernel(x.shape[1], x.dtype)
+        and (
+            weight is None
+            or (
+                weight.shape == (x.shape[1],)
+                and weight.dtype in (x.dtype, torch.float32)
+                and weight.is_contiguous()
+            )
+        )
+    )
+
+
+def rmsnorm(x: torch.Tensor, weight: torch.Tensor | None, eps: float) -> torch.Tensor:
+    """``x * rstd * weight`` per row in FP32 (no weight: ``x * rstd``), in ``x``'s dtype; contiguous output."""
+    from sglang.kernels.tlx_ops.kernels.norm.gfx950 import rmsnorm as _rmsnorm
+
+    return _rmsnorm(x, weight, eps=eps)[0]
+
+
+def rmsnorm_gate_supported(x: torch.Tensor, gate: torch.Tensor) -> bool:
+    """Whether ``rmsnorm_gate`` handles these operands; host-only, never reads device data.
+
+    Head dim 64 and a weightless norm are the caller's to check; here: BF16 ``x`` and ``gate`` of one ``(T, H * 64)``
+    shape, ``H`` a multiple of 8, contiguous rows.
+    """
+    return (
+        x.dim() == 2
+        and gate.shape == x.shape
+        and x.shape[0] > 0
+        and x.shape[1] % (8 * 64) == 0
+        and x.dtype == gate.dtype == torch.bfloat16
+        and x.stride(1) == 1
+        and gate.stride(1) == 1
+    )
+
+
+def rmsnorm_gate(x: torch.Tensor, gate: torch.Tensor, eps: float) -> torch.Tensor:
+    """Per 64-element head: ``bf16(x * rsqrt(mean(x * x) + eps) * sigmoid(gate))`` in FP32; contiguous output."""
+    from sglang.kernels.tlx_ops.kernels.fused.rmsnorm_gate.gfx950 import (
+        rmsnorm_gate as _rmsnorm_gate,
+    )
+
+    return _rmsnorm_gate(x, gate, eps, None)

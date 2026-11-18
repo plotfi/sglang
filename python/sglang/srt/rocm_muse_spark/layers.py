@@ -10,11 +10,14 @@ import torch.nn.functional as F
 from torch import nn
 
 from sglang.srt.distributed import divide
+from sglang.srt.environ import envs
 from sglang.srt.layers.linear import (
     ColumnParallelLinear,
     LinearParallelGroup,
     resolve_linear_parallel_group,
 )
+
+_USE_TLX_RMSNORM = envs.SGLANG_USE_TLX_RMSNORM.get()
 
 
 class GainCenterType(enum.Enum):
@@ -97,10 +100,14 @@ class MuseSpark1xRMSNorm(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if x.numel() == 0:
             return x
+        weight = self._get_effective_weight()
+        if _USE_TLX_RMSNORM:
+            from sglang.kernels.ops.layernorm.tlx import rmsnorm, rmsnorm_supported
+
+            if rmsnorm_supported(x, weight):
+                return rmsnorm(x, weight, self.eps)
         dtype = x.dtype
-        return F.rms_norm(
-            x, (self.hidden_size,), self._get_effective_weight(), self.eps
-        ).to(dtype)
+        return F.rms_norm(x, (self.hidden_size,), weight, self.eps).to(dtype)
 
 
 class MuseSpark1xRMSNormWithInputScale(MuseSpark1xRMSNorm):
