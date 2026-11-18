@@ -16,16 +16,18 @@ stock-Triton runtime support in `kernels/jit/utils/tlx_runtime.py`.
 | `kernels/__init__.py`, `kernels/mm/__init__.py`, `kernels/moe/__init__.py` | `2e8256a9b` | none |
 | `kernels/mm/gfx950.py` | `2e8256a9b` | none |
 | `kernels/moe/gfx950.py` | `2e8256a9b` | `_register_matmul_core` imported from `sglang.kernels.tlx_ops.kernels.mm.gfx950` instead of `triton.tlx.ops.kernels.mm.gfx950` |
-| `kernels/fused/__init__.py` | `87abb3f5a` | none |
 | `kernels/fused/norm_residual_norm/__init__.py`, `gfx950.py` | `87abb3f5a` | none |
 | `kernels/fused/qk_norm_rope_kv_cache/__init__.py`, `gfx950.py` | `87abb3f5a` | none |
 | `kernels/norm/__init__.py`, `gfx950.py` | `87abb3f5a` | none |
 | `kernels/router_gemm/__init__.py`, `gfx950.py` | `87abb3f5a` | none |
+| `kernels/fused/__init__.py` (docstring) | `51d7e3cbf` | none |
+| `kernels/fused/rmsnorm_gate/__init__.py`, `gfx950.py` | `51d7e3cbf` | none |
 
-Upstream's `kernels/moe/routing_gfx950.py` (`tlx.ops.moe_routing`) is not
+Upstream's `kernels/moe/routing_gfx950.py` (`tlx.ops.moe_routing`), and with it
+`kernels/fused/moe_router_topk_align/` (which calls it), are not
 vendored: with triton-utlx 3.9.0.post4 its `tl.where` on a `tlx.require_layout`
 tensor and a plain one fails `arith.select` verification on stock Triton.
 
-To re-sync, copy those files from the new upstream commit, re-apply the one
-import edit, and update the commits above. The pre-commit config excludes this
+To re-sync, copy those files from the new upstream commit, re-apply the import
+edits listed above, and update the commits. The pre-commit config excludes this
 directory so formatting never diverges from upstream.
